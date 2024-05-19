@@ -19,6 +19,51 @@ CLIENT_SCOPES = [
 # 利用するサービスとバージョンのセット
 SERVICE_NAME = 'youtube'
 VERSION = 'v3'
+SERVICE_NAME_ANALYTICS = 'youtubeAnalytics'
+VERSION_ANALYTICS = 'v2'
+
+START_DATE = '2024-03-28'  # データ取得の開始日
+END_DATE = '2024-05-17'    # データ取得の終了日
+
+# メイン関数を作成
+def main():
+  
+    youtube_analytics = get_authenticated_service(SERVICE_NAME, VERSION)
+
+    # 各情報を取得する関数の呼び出し
+    channel_data = channel_info(youtube_analytics)
+    ids_data = ids_info(youtube_analytics)
+    
+    youtube_analytics = get_authenticated_service(SERVICE_NAME_ANALYTICS, VERSION_ANALYTICS)
+    videos_data = get_video_by_day(youtube_analytics, channel_data['id'], ids_data)
+    
+    videos_data.to_csv('data_file.csv', index=False)
+      
+    base_data = {'チャンネルタイトル': channel_data['title'],
+                 '配信回数': channel_data['video_count'],
+                 '総視聴回数': channel_data['view_count'],
+                 'チャンネル登録者数': channel_data['subscriber_count'],
+                }
+    
+    # 辞書化基本の情報をデータフレーム化し、csvで掃き出し
+    base_data_file = pd.DataFrame.from_dict(base_data, orient = "index",columns=["data"])
+    base_data_file.to_csv('base_data_file.csv')
+
+
+def get_authenticated_service(service_name, version):
+    # 認証フローを作成 
+    flow = flow_from_clientsecrets(SECRET_FILE, scope=CLIENT_SCOPES)
+
+    # 資格情報を取得してファイルに保存
+    storage = Storage('credentials.json')
+    credentials = storage.get()
+    if credentials is None or credentials.invalid:
+        credentials = run_flow(flow, storage)
+
+    # サービスオブジェクトの作成
+    service = build(service_name, version, http=credentials.authorize(httplib2.Http()))
+    
+    return service
 
 
 # チャンネル情報を取得する関数を作成（リクエスト条件をパラメータにセットし実行、取得した情報を取り出しまとめる）
@@ -63,90 +108,30 @@ def ids_info(service):
             previous_response = res
         )
     return video_ids
+  
 
-
-# 動画のIDから各動画の情報を取得（リクエスト条件をパラメータにセットし実行、取得した情報を取り出しまとめる）
-def videos_info(ids_data, service):
-    videos = []
-
-    for video_id in ids_data:
-      video = service.videos().list(
-          id=video_id,
-          part='snippet, contentDetails, statistics',
-      ).execute()
-
-      snippet = video['items'][0]['snippet']
-      details = video['items'][0]['contentDetails']
-      statistics = video['items'][0]['statistics']
-
-      duration = isodate.parse_duration(details['duration'])
-
-      videos.append({
-          'id': video['items'][0]['id'],
-          'title': snippet['title'],
-          'description': snippet['description'],
-          'published_at': snippet['publishedAt'],
-          'duration': int(duration.total_seconds()),
-          'view_count': int(statistics['viewCount']),
-          'like_count': int(statistics['likeCount']),
-          'dislike_count': int(statistics['dislikeCount']),
-          'comment_count': statistics['commentCount']
-      })
-      
-    return videos
-
-# メイン関数を作成
-def main():
-    # 認証フローを作成 
-    flow = flow_from_clientsecrets(SECRET_FILE, scope=CLIENT_SCOPES)
-
-    # 資格情報を取得してファイルに保存
-    storage = Storage('credentials.json')
-    credentials = storage.get()
-    if credentials is None or credentials.invalid:
-        credentials = run_flow(flow, storage)
-
-    # サービスオブジェクトの作成
-    service = build(SERVICE_NAME, VERSION, http=credentials.authorize(httplib2.Http()))
+# 日付ごとの動画情報を取得
+def get_video_by_day(youtube_analytics, channel_id, video_ids):
+  
+  df = []
+  for video_id in video_ids:
+    request = youtube_analytics.reports().query(
+        ids='channel=={}'.format(channel_id),
+        startDate=START_DATE,
+        endDate=END_DATE,
+        metrics='views,estimatedMinutesWatched,averageViewDuration,likes,dislikes,comments,subscribersGained,subscribersLost',
+        dimensions='day,video',
+        sort='day,video',
+        filters='video=={}'.format(video_id),
+    )
+    response = request.execute()
+    # responseの内容をPandas DataFrameに変換してdfリストに追加
+    df.append(pd.DataFrame(response['rows'], columns=['day', 'video_id', 'views', 'estimatedMinutesWatched', 'averageViewDuration', 'likes', 'dislikes', 'comments', 'subscribersGained', 'subscribersLost']))
     
-    
-    # 各情報を取得する関数の呼び出し
-    channel_data = channel_info(service)
-    ids_data = ids_info(service)
-    videos_data = videos_info(ids_data, service)
-    
-    
-    # 取得した動画情報をデータフレーム化しcsvで掃き出し
-    data_file = pd.DataFrame(videos_data)
-    data_file.to_csv('data_file.csv', index=False)
-    
-    
-    # videos_dataから各動画の「高評価」、「低評価」、「総時間」を加算し総数を計算しその他情報とともに辞書化
-    total = {
-        'duration': 0,
-        'like_count': 0,
-        'dislike_count': 0
-    }
+    # 最終的に１つの表にするために、全てのデータフレームを連結
+    final_df = pd.concat(df, ignore_index=True)
 
-    for video in videos_data:
-        total['duration'] += video['duration']
-        total['like_count'] += video['like_count']
-        total['dislike_count'] += video['dislike_count']
-        
-    total_hours = total['duration'] / 60 /60  
-    
-    base_data = {'チャンネルタイトル': channel_data['title'],
-                 '配信回数': channel_data['video_count'],
-                 '総視聴回数': channel_data['view_count'],
-                 'チャンネル登録者数': channel_data['subscriber_count'],
-                 '総高評価数': total['like_count'],
-                 '総低評価数': total['dislike_count'],
-                 '総配信時間': math.floor(total_hours)}
-    
-    
-    # 辞書化基本の情報をデータフレーム化し、csvで掃き出し
-    base_data_file = pd.DataFrame.from_dict(base_data, orient = "index",columns=["data"])
-    base_data_file.to_csv('base_data_file.csv')
+  return final_df
     
 
 if __name__ == '__main__':
