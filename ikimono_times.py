@@ -2,6 +2,7 @@ import httplib2
 import pandas as pd
 import isodate
 from datetime import datetime, timedelta
+from dateutil import tz
 from googleapiclient.discovery import build
 from oauth2client.client import flow_from_clientsecrets
 from oauth2client.file import Storage
@@ -56,17 +57,10 @@ def main():
     # df_video, df_video_info, df_date_videoを結合するコード
     df_video = df_video_info.merge(df_date_video, on='id', how='inner')
     
-    df_video.to_csv('data_file.csv', index=False)
-      
-    base_data = {'チャンネルタイトル': df_channel['title'],
-                 '配信回数': df_channel['video_count'],
-                 '総視聴回数': df_channel['view_count'],
-                 'チャンネル登録者数': df_channel['subscriber_count'],
-                }
+    # スプシの更新
+    update_spread_sheet(df_video)
     
-    # 辞書化基本の情報をデータフレーム化し、csvで掃き出し
-    base_data_file = pd.DataFrame.from_dict(base_data, orient = "index",columns=["data"])
-    base_data_file.to_csv('base_data_file.csv')
+    print('処理完了')
 
 
 def get_authenticated_service(service_name, version):
@@ -123,7 +117,9 @@ def get_video_id_list(service):
     return video_id_list
 
 
+# ビデオの詳細情報を取得
 def get_video_info(service, video_id_list):
+  
   video_details_list = []
   for video_id in video_id_list:
     video_details = service.videos().list(
@@ -135,13 +131,13 @@ def get_video_info(service, video_id_list):
         video_info = {
             'title': video['snippet']['title'],
             'id': video['id'],
-            'published_at': video['snippet']['publishedAt'],
-            'duration': isodate.parse_duration(video['contentDetails']['duration']),
+            'duration': isodate.parse_duration(video['contentDetails']['duration']).total_seconds(),
             'definition': video['contentDetails']['definition']
         }
         video_details_list.append(video_info)
 
   df_video_details = pd.DataFrame(video_details_list)
+  
   return df_video_details
     
 
@@ -166,8 +162,37 @@ def get_video_by_day(service, channel_id, video_id_list):
     
   # 全てのデータフレームを連結
   df_date_video = pd.concat(date_video_list, ignore_index=True)
-
+  
+  # 合計試聴時間を算出し、平均試聴時間を削除
+  df_date_video['sumViewDuration'] = df_date_video['averageViewDuration'] * df_date_video['views']
+  df_date_video.drop(columns=['averageViewDuration'], inplace=True)
+  
   return df_date_video
+
+
+# スプレッドシートの更新
+def update_spread_sheet(df):
+  # スプレッドシート連携
+  # creds を使って Google Drive API と対話するためのクライアントを作成
+  scope =['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+  creds = ServiceAccountCredentials.from_json_keyfile_name('json/spread_key.json', scope)
+  client = gspread.authorize(creds)
+
+  try:
+    # Google スプレッドシート "Youtube rawdata" を開き、"rawdata" シートを取得
+    worksheet = client.open("Youtube rawdata").worksheet('rawdata')
+
+    # シートの内容をクリア
+    worksheet.clear()
+    
+    # DataFrame のデータをシートに転送（インデックスはリセット）
+    set_with_dataframe(worksheet, df.reset_index(drop=True))
+    
+    print("スプレッドシートの更新が完了しました。")
+  except Exception as e:
+    print(f"スプレッドシートの更新中にエラーが発生しました: {e}")
+  
+  return
  
 
 if __name__ == '__main__':
