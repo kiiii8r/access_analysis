@@ -1,12 +1,15 @@
 import httplib2
-import isodate
-import math
 import pandas as pd
-
+import isodate
+from datetime import datetime, timedelta
 from googleapiclient.discovery import build
 from oauth2client.client import flow_from_clientsecrets
 from oauth2client.file import Storage
 from oauth2client.tools import run_flow
+
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from gspread_dataframe import get_as_dataframe, set_with_dataframe
 
 # OAuthクライエントIDなどを記載しているjsonファイルを変数にセット
 SECRET_FILE = '/Users/kii/work/access_analysis/json/youtube_client_secret.json'
@@ -17,32 +20,48 @@ CLIENT_SCOPES = [
 ]
 
 # 利用するサービスとバージョンのセット
-SERVICE_NAME = 'youtube'
+SERVICE_NAME = 'youtube' # YouTube Data API v3
 VERSION = 'v3'
-SERVICE_NAME_ANALYTICS = 'youtubeAnalytics'
+SERVICE_NAME_ANALYTICS = 'youtubeAnalytics' # YouTube Analytics API v2
 VERSION_ANALYTICS = 'v2'
 
-START_DATE = '2024-03-28'  # データ取得の開始日
-END_DATE = '2024-05-17'    # データ取得の終了日
+# 日付の設定
+current_date = datetime.now() # 現在の日付を取得
+ch_open_date = datetime(2024, 3, 28) # チャンネル開設日
 
-# メイン関数を作成
+# チャンネル開設日が1年以上前の場合、1年前の日付から取得。
+if (current_date - ch_open_date).days >= 365:
+    START_DATE = (current_date - timedelta(days=365)).date().isoformat()
+else:
+    START_DATE = '2024-03-28'
+END_DATE = datetime.now().date().isoformat()  # 最新の日付まで取得
+
+
 def main():
-  
-    youtube_analytics = get_authenticated_service(SERVICE_NAME, VERSION)
+    service_data = get_authenticated_service(SERVICE_NAME, VERSION)  # YouTube Data API v3 を使用
+    service_analytics = get_authenticated_service(SERVICE_NAME_ANALYTICS, VERSION_ANALYTICS)  # YouTube Analytics API v2 を使用 
 
-    # 各情報を取得する関数の呼び出し
-    channel_data = channel_info(youtube_analytics)
-    ids_data = ids_info(youtube_analytics)
+    # チャンネル情報を取得
+    df_channel = get_channel_info(service_data)
     
-    youtube_analytics = get_authenticated_service(SERVICE_NAME_ANALYTICS, VERSION_ANALYTICS)
-    videos_data = get_video_by_day(youtube_analytics, channel_data['id'], ids_data)
+    # 動画IDリスト取得
+    video_id_list = get_video_id_list(service_data)
     
-    videos_data.to_csv('data_file.csv', index=False)
+    # 動画情報を取得
+    df_video_info = get_video_info(service_data, video_id_list)
+    
+    # 日付ごとの動画情報を取得
+    df_date_video = get_video_by_day(service_analytics, df_channel['id'], video_id_list)
+    
+    # df_video, df_video_info, df_date_videoを結合するコード
+    df_video = df_video_info.merge(df_date_video, on='id', how='inner')
+    
+    df_video.to_csv('data_file.csv', index=False)
       
-    base_data = {'チャンネルタイトル': channel_data['title'],
-                 '配信回数': channel_data['video_count'],
-                 '総視聴回数': channel_data['view_count'],
-                 'チャンネル登録者数': channel_data['subscriber_count'],
+    base_data = {'チャンネルタイトル': df_channel['title'],
+                 '配信回数': df_channel['video_count'],
+                 '総視聴回数': df_channel['view_count'],
+                 'チャンネル登録者数': df_channel['subscriber_count'],
                 }
     
     # 辞書化基本の情報をデータフレーム化し、csvで掃き出し
@@ -67,7 +86,7 @@ def get_authenticated_service(service_name, version):
 
 
 # チャンネル情報を取得する関数を作成（リクエスト条件をパラメータにセットし実行、取得した情報を取り出しまとめる）
-def channel_info(service):
+def get_channel_info(service):
     channels = service.channels().list(
         part = 'snippet, statistics',
         mine = True
@@ -87,35 +106,51 @@ def channel_info(service):
 
 
 # 動画のidを取得する関数の作成（リクエスト条件をパラメータにセットし実行。取得した情報を取り出しまとめる）
-def ids_info(service):
-    search_request = service.search().list(
-        part='id',
-        forMine = True,
-        type = 'video',
-        order = 'date',
-        maxResults = 50,
-    )
+def get_video_id_list(service):
+    videos = service.search().list(
+        part='snippet',
+        forMine=True,
+        type='video',
+        order='date',
+        maxResults=50,
+    ).execute()
 
-    video_ids = []
-    while search_request:
-        res = search_request.execute()
+    video_id_list = []
+    
+    for video in videos['items']:
+        video_id_list.append(video['id']['videoId'])
+        
+    return video_id_list
 
-        for video in res['items']:
-            video_ids.append(video['id']['videoId'])
 
-        search_request = service.search().list_next(
-            previous_request = search_request,
-            previous_response = res
-        )
-    return video_ids
-  
+def get_video_info(service, video_id_list):
+  video_details_list = []
+  for video_id in video_id_list:
+    video_details = service.videos().list(
+        id=video_id,
+        part='snippet,contentDetails',
+    ).execute()
+
+    for video in video_details['items']:
+        video_info = {
+            'title': video['snippet']['title'],
+            'id': video['id'],
+            'published_at': video['snippet']['publishedAt'],
+            'duration': isodate.parse_duration(video['contentDetails']['duration']),
+            'definition': video['contentDetails']['definition']
+        }
+        video_details_list.append(video_info)
+
+  df_video_details = pd.DataFrame(video_details_list)
+  return df_video_details
+    
 
 # 日付ごとの動画情報を取得
-def get_video_by_day(youtube_analytics, channel_id, video_ids):
+def get_video_by_day(service, channel_id, video_id_list):
   
-  df = []
-  for video_id in video_ids:
-    request = youtube_analytics.reports().query(
+  date_video_list = []
+  for video_id in video_id_list:
+    response = service.reports().query(
         ids='channel=={}'.format(channel_id),
         startDate=START_DATE,
         endDate=END_DATE,
@@ -123,16 +158,17 @@ def get_video_by_day(youtube_analytics, channel_id, video_ids):
         dimensions='day,video',
         sort='day,video',
         filters='video=={}'.format(video_id),
-    )
-    response = request.execute()
+    ).execute()
+    
     # responseの内容をPandas DataFrameに変換してdfリストに追加
-    df.append(pd.DataFrame(response['rows'], columns=['day', 'video_id', 'views', 'estimatedMinutesWatched', 'averageViewDuration', 'likes', 'dislikes', 'comments', 'subscribersGained', 'subscribersLost']))
+    date_video_list.append(pd.DataFrame(response['rows'], columns=['day', 'id', 'views', 'estimatedMinutesWatched', 'averageViewDuration', 'likes',
+                                                                   'dislikes', 'comments', 'subscribersGained', 'subscribersLost']))
     
-    # 最終的に１つの表にするために、全てのデータフレームを連結
-    final_df = pd.concat(df, ignore_index=True)
+  # 全てのデータフレームを連結
+  df_date_video = pd.concat(date_video_list, ignore_index=True)
 
-  return final_df
-    
+  return df_date_video
+ 
 
 if __name__ == '__main__':
     main()
