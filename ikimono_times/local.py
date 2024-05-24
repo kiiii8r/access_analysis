@@ -11,35 +11,11 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import get_as_dataframe, set_with_dataframe
 
-# OAuthクライエントIDなどを記載しているjsonファイルを変数にセット
-SECRET_FILE = '/Users/kii/work/access_analysis/json/youtube_client_secret.json'
-
-# 利用するAPIのスコープを指定
-CLIENT_SCOPES = [
-    'https://www.googleapis.com/auth/youtube.readonly'
-]
-
-# 利用するサービスとバージョンのセット
-SERVICE_NAME = 'youtube' # YouTube Data API v3
-VERSION = 'v3'
-SERVICE_NAME_ANALYTICS = 'youtubeAnalytics' # YouTube Analytics API v2
-VERSION_ANALYTICS = 'v2'
-
-# 日付の設定
-current_date = datetime.now() # 現在の日付を取得
-ch_open_date = datetime(2024, 3, 28) # チャンネル開設日
-
-# チャンネル開設日が1年以上前の場合、1年前の日付から取得。
-if (current_date - ch_open_date).days >= 365:
-    START_DATE = (current_date - timedelta(days=365)).date().isoformat()
-else:
-    START_DATE = '2024-03-28'
-END_DATE = datetime.now().date().isoformat()  # 最新の日付まで取得
-
+import config as config
 
 def main():
-    service_data = get_authenticated_service(SERVICE_NAME, VERSION)  # YouTube Data API v3 を使用
-    service_analytics = get_authenticated_service(SERVICE_NAME_ANALYTICS, VERSION_ANALYTICS)  # YouTube Analytics API v2 を使用 
+    service_data = get_authenticated_service(config.SERVICE_NAME, config.VERSION)  # YouTube Data API v3 を使用
+    service_analytics = get_authenticated_service(config.SERVICE_NAME_ANALYTICS, config.VERSION_ANALYTICS)  # YouTube Analytics API v2 を使用 
 
     # チャンネル情報を取得
     df_channel = get_channel_info(service_data)
@@ -64,7 +40,7 @@ def main():
 
 def get_authenticated_service(service_name, version):
     # 認証フローを作成 
-    flow = flow_from_clientsecrets(SECRET_FILE, scope=CLIENT_SCOPES)
+    flow = flow_from_clientsecrets(config.SECRET_FILE, scope=config.CLIENT_SCOPES)
 
     # 資格情報を取得してファイルに保存
     storage = Storage('credentials.json')
@@ -147,8 +123,8 @@ def get_video_by_day(service, channel_id, video_id_list):
   for video_id in video_id_list:
     response = service.reports().query(
         ids='channel=={}'.format(channel_id),
-        startDate=START_DATE,
-        endDate=END_DATE,
+        startDate=config.START_DATE,
+        endDate=config.END_DATE,
         metrics='views,estimatedMinutesWatched,averageViewDuration,likes,dislikes,comments,subscribersGained,subscribersLost',
         dimensions='day,video',
         sort='day,video',
