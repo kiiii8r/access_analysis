@@ -76,19 +76,27 @@ def get_channel_info(service):
 
 # 動画のidを取得する関数の作成（リクエスト条件をパラメータにセットし実行。取得した情報を取り出しまとめる）
 def get_video_id_list(service):
-    videos = service.search().list(
-        part='snippet',
-        forMine=True,
-        type='video',
-        order='date',
-        maxResults=50,
-    ).execute()
-
     video_id_list = []
-    
-    for video in videos['items']:
-        video_id_list.append(video['id']['videoId'])
-        
+    next_page_token = None
+
+    while True:
+        videos = service.search().list(
+            part='snippet',
+            forMine=True,
+            type='video',
+            order='date',
+            maxResults=50,
+            pageToken=next_page_token
+        ).execute()
+
+        for video in videos['items']:
+            video_id_list.append(video['id']['videoId'])
+
+        # 未取得分がある場合は取得を継続
+        next_page_token = videos.get('nextPageToken')
+        if not next_page_token:
+            break
+
     return video_id_list
 
 
