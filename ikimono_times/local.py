@@ -38,6 +38,7 @@ def main():
     print('処理完了')
 
 
+# Youtube APIの認証情報を取得
 def get_authenticated_service(service_name, version):
     # 認証フローを作成 
     flow = flow_from_clientsecrets(config.SECRET_FILE, scope=config.CLIENT_SCOPES)
