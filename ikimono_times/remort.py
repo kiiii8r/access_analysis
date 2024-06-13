@@ -16,6 +16,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import get_as_dataframe, set_with_dataframe
 
 import config as config
+import get_key as key
 
 
 def lambda_handler(event, context):
@@ -43,12 +44,13 @@ def lambda_handler(event, context):
     print('処理完了')
 
 
+# Youtube APIの認証情報を取得
 def get_authenticated_service(service_name, version):
     # 認証フローを作成 
     flow = flow_from_clientsecrets(config.SECRET_FILE, scope=config.CLIENT_SCOPES)
 
     # 資格情報を取得してファイルに保存
-    storage = Storage('credentials.json')
+    storage = Storage(ast.literal_eval(key.get_key('youtube_key')))
     credentials = storage.get()
     if credentials is None or credentials.invalid:
         credentials = run_flow(flow, storage)
@@ -152,24 +154,27 @@ def get_video_by_day(service, channel_id, video_id_list):
 
 # スプレッドシートの更新
 def update_spread_sheet(df):
-  # スプレッドシート連携
-  # creds を使って Google Drive API と対話するためのクライアントを作成
-  scope =['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-  creds = ServiceAccountCredentials.from_json_keyfile_name('json/spread_key.json', scope)
-  client = gspread.authorize(creds)
-
-  try:
-    # Google スプレッドシート "Youtube rawdata" を開き、"rawdata" シートを取得
-    worksheet = client.open("Youtube rawdata").worksheet('rawdata')
-
-    # シートの内容をクリア
-    worksheet.clear()
+    # スプレッドシート反映
+    # AWS Secrets Manageから取得したspreadsheets_keyの文字列型を辞書型にする
+    spreadsheets_key = ast.literal_eval(key.get_key('spreadsheets_key'))
     
-    # DataFrame のデータをシートに転送（インデックスはリセット）
-    set_with_dataframe(worksheet, df.reset_index(drop=True))
+    # creds を使って Google Drive API と対話するためのクライアントを作成
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(spreadsheets_key, scope)
+    client = gspread.authorize(creds)
     
-    print("スプレッドシートの更新が完了しました。")
-  except Exception as e:
-    print(f"スプレッドシートの更新中にエラーが発生しました: {e}")
-  
-  return
+    try:
+        # Google スプレッドシート "Youtube rawdata" を開き、"rawdata" シートを取得
+        worksheet = client.open("Youtube rawdata").worksheet('rawdata')
+
+        # シートの内容をクリア
+        worksheet.clear()
+        
+        # DataFrame のデータをシートに転送（インデックスはリセット）
+        set_with_dataframe(worksheet, df.reset_index(drop=True))
+        
+        print("スプレッドシートの更新が完了しました。")
+    except Exception as e:
+        print(f"スプレッドシートの更新中にエラーが発生しました: {e}")
+    
+    return
